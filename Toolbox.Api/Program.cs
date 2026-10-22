@@ -33,6 +33,21 @@ app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
         .Select(r => string.Join("", r.Text))
         .Where(t => t.StartsWith("v=spf1", StringComparison.OrdinalIgnoreCase))
         .ToList();
+    
+    // DMARC
+    var dmarcResult = await dns.QueryAsync($"_dmarc.{domain}", QueryType.TXT);
+    var dmarcRecords = dmarcResult.Answers.TxtRecords()
+        .Select(r => string.Join("", r.Text))
+        .Where(t => t.StartsWith("v=DMARC1", StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    // DMARC policy 
+    var dmarcRecord = dmarcRecords.FirstOrDefault();
+    var policy = dmarcRecord?
+        .Split(';')
+        .Select(part => part.Trim())
+        .FirstOrDefault(part => part.StartsWith("p="))
+        ?.Substring(2);
 
     return Results.Ok(new
     {
@@ -42,6 +57,17 @@ app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
         {
             status = spfRecords.Count == 1 ? "pass" : "fail",
             record = spfRecords.FirstOrDefault()
+        },
+        dmarc = new
+        {
+            status = policy switch
+            {
+                "reject" or "quarantine" => "pass",
+                "none" => "warn",
+                _ => "fail"
+            },
+            policy,
+            record = dmarcRecord
         }
     });
 });
