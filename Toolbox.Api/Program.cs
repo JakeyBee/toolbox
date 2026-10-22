@@ -20,17 +20,29 @@ app.UseHttpsRedirection();
 
 app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
 {
-    var result = await dns.QueryAsync(domain, QueryType.MX);
-
-    var records = result.Answers.MxRecords()
+    // MX
+    var mxResult = await dns.QueryAsync(domain, QueryType.MX);
+    var mxRecords = mxResult.Answers.MxRecords()
         .OrderBy(r => r.Preference)
         .Select(r => r.Exchange.Value.TrimEnd('.'))
+        .ToList();
+
+    // SPF
+    var txtResult = await dns.QueryAsync(domain, QueryType.TXT);
+    var spfRecords = txtResult.Answers.TxtRecords()
+        .Select(r => string.Join("", r.Text))
+        .Where(t => t.StartsWith("v=spf1", StringComparison.OrdinalIgnoreCase))
         .ToList();
 
     return Results.Ok(new
     {
         domain,
-        mx = new { status = records.Count > 0 ? "pass" : "fail", records }
+        mx = new { status = mxRecords.Count > 0 ? "pass" : "fail", records = mxRecords },
+        spf = new
+        {
+            status = spfRecords.Count == 1 ? "pass" : "fail",
+            record = spfRecords.FirstOrDefault()
+        }
     });
 });
 
