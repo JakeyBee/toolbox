@@ -2,24 +2,36 @@ using DnsClient;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<ILookupClient>(new LookupClient());
 
+builder.Services.AddCors(options =>                    // NEW
+{
+    options.AddDefaultPolicy(policy =>
+        policy.WithOrigins("http://localhost:5173")    // only your site
+            .AllowAnyHeader()
+            .WithMethods("GET"));                     // only reads
+});
 var app = builder.Build();
 
-
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 
 app.UseHttpsRedirection();
+app.UseCors(); 
 
 app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
 {
+    // NEW: clean up, then check, before touching DNS
+    domain = domain.Trim().TrimEnd('.').ToLowerInvariant();
+
+    if (!IsValidDomain(domain))
+    {
+        return Results.BadRequest(new { error = "Not a valid domain name." });
+    }
+
     // MX
     var mxResult = await dns.QueryAsync(domain, QueryType.MX);
     var mxRecords = mxResult.Answers.MxRecords()
@@ -33,7 +45,7 @@ app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
         .Select(r => string.Join("", r.Text))
         .Where(t => t.StartsWith("v=spf1", StringComparison.OrdinalIgnoreCase))
         .ToList();
-    
+
     // DMARC
     var dmarcResult = await dns.QueryAsync($"_dmarc.{domain}", QueryType.TXT);
     var dmarcRecords = dmarcResult.Answers.TxtRecords()
@@ -41,7 +53,7 @@ app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
         .Where(t => t.StartsWith("v=DMARC1", StringComparison.OrdinalIgnoreCase))
         .ToList();
 
-    // DMARC policy 
+    // DMARC policy
     var dmarcRecord = dmarcRecords.FirstOrDefault();
     var policy = dmarcRecord?
         .Split(';')
@@ -74,3 +86,20 @@ app.MapGet("/api/dns/{domain}", async (string domain, ILookupClient dns) =>
 
 app.Run();
 
+
+static bool IsValidDomain(string domain)
+{
+    if (domain.Length > 253) return false;          
+
+    var labels = domain.Split('.');
+    if (labels.Length < 2) return false;            
+
+    foreach (var label in labels)
+    {
+        if (label.Length is 0 or > 63) return false;              // "a..b" or 70 a's fail
+        if (label.StartsWith('-') || label.EndsWith('-')) return false;
+        if (!label.All(c => char.IsAsciiLetterOrDigit(c) || c == '-')) return false;  // spaces fail
+    }
+
+    return true;
+}
